@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from sklearn.model_selection import KFold
-from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.ensemble import HistGradientBoostingRegressor, ExtraTreesRegressor
 from sklearn.metrics import r2_score
 import warnings
 
@@ -95,11 +95,21 @@ def run_pipeline(
     model_configs = [
         {
             "name": "Model_A_Base",
-            "params": {"learning_rate": 0.08, "max_iter": 200, "max_leaf_nodes": 31, "random_state": 42}
+            "weight": 0.45,
+            "class": HistGradientBoostingRegressor,
+            "params": {"learning_rate": 0.06, "max_iter": 400, "max_leaf_nodes": 47, "random_state": 42}
         },
         {
             "name": "Model_B_Deep",
-            "params": {"learning_rate": 0.05, "max_iter": 300, "max_leaf_nodes": 47, "random_state": 2026}
+            "weight": 0.45,
+            "class": HistGradientBoostingRegressor,
+            "params": {"learning_rate": 0.05, "max_iter": 500, "max_leaf_nodes": 63, "random_state": 2026}
+        },
+        {
+            "name": "Model_C_Trees",
+            "weight": 0.10,
+            "class": ExtraTreesRegressor,
+            "params": {"n_estimators": 100, "max_depth": 22, "min_samples_split": 5, "random_state": 42, "n_jobs": -1}
         }
     ]
 
@@ -117,16 +127,16 @@ def run_pipeline(
         # Train and average the configurations
         for config in model_configs:
             print(f"  Training {config['name']} ...")
-            model = HistGradientBoostingRegressor(**config['params'])
+            model = config['class'](**config['params'])
             model.fit(X_train, y_train)
             
             # Predict
             val_preds = model.predict(X_val)
             test_preds = model.predict(X_test)
             
-            # Aggregate predictions (simple average)
-            fold_oof += val_preds / len(model_configs)
-            fold_test += test_preds / len(model_configs)
+            # Aggregate predictions with custom weights
+            fold_oof += val_preds * config['weight']
+            fold_test += test_preds * config['weight']
             
         fold_r2 = r2_score(y_val, fold_oof)
         fold_score = max(0, 100 * fold_r2)

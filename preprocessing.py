@@ -41,8 +41,6 @@ TRAIN_PATH = DATA_DIR / "train.csv"
 TEST_PATH  = DATA_DIR / "test.csv"
 
 TARGET      = "demand"
-N_LAG_DAYS  = 3          # how many previous day-slots to use for lag features
-ROLLING_WIN = [3, 7]     # rolling window sizes (in sorted day-order per geohash)
 
 # ──────────────────────────────────────────────
 # 1. Helpers
@@ -213,18 +211,15 @@ def build_features(
 
     # Binary flags
     for col in ["LargeVehicles", "Landmarks"]:
-        if df[col].dtype == object:
-            df[col] = (
-                df[col]
-                .astype(str)
-                .str.strip()
-                .str.lower()
-                .map({"true": 1, "false": 0, "yes": 1, "no": 0, "1": 1, "0": 0})
-                .fillna(0)
-                .astype(int)
-            )
-        else:
-            df[col] = df[col].fillna(0).astype(int)
+        df[col] = (
+            df[col]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .map({"true": 1, "false": 0, "yes": 1, "no": 0, "allowed": 1, "not allowed": 0, "1": 1, "0": 0})
+            .fillna(0)
+            .astype(int)
+        )
     print(f"  LargeVehicles unique: {sorted(df['LargeVehicles'].unique())}")
     print(f"  Landmarks unique    : {sorted(df['Landmarks'].unique())}")
 
@@ -264,36 +259,11 @@ def build_features(
     df["road_weather_interaction"] = df["RoadType_le"].astype(str) + "_" + df["Weather_le"].astype(str)
     df["road_weather_le"] = LabelEncoder().fit_transform(df["road_weather_interaction"])
 
-    # ── STEP 4: Lag & Rolling Features ────────
-    print("\n[5/5] Step 4 – Lag and rolling demand features …")
+    # ── STEP 4: Target Mean Features ──────────
+    print("\n[5/5] Step 4 – Computing historical target mean features …")
 
-    # Sort by geohash, day, time for rolling to be meaningful
-    df = df.sort_values(["geohash", "day", "time_minutes"]).reset_index(drop=True)
-
-    # We only have demand for train rows; test demand is NaN.
-    # We create lag features by shifting within each geohash group.
-    # This captures historical demand for the same location at earlier time steps.
+    # Group-level temporal features (within geohash)
     train_df_sorted = df[df["_split"] == "train"].copy()
-
-    # Group-level lag features (within geohash, sorted by day + time)
-    print(f"  Creating {N_LAG_DAYS} lag features …")
-    for lag in range(1, N_LAG_DAYS + 1):
-        col_name = f"demand_lag_{lag}"
-        train_df_sorted[col_name] = (
-            train_df_sorted.groupby("geohash")[TARGET].shift(lag)
-        )
-
-    # Rolling mean/std features
-    for w in ROLLING_WIN:
-        print(f"  Rolling window = {w} …")
-        train_df_sorted[f"demand_roll_mean_{w}"] = (
-            train_df_sorted.groupby("geohash")[TARGET]
-            .transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
-        )
-        train_df_sorted[f"demand_roll_std_{w}"] = (
-            train_df_sorted.groupby("geohash")[TARGET]
-            .transform(lambda x: x.shift(1).rolling(w, min_periods=1).std().fillna(0))
-        )
 
     # Hour-of-day × geohash mean demand (a proxy for typical rush-hour demand)
     geo_hour_mean = (
@@ -303,25 +273,9 @@ def build_features(
         .reset_index()
     )
 
-    # Merge lag features back – test rows get NaN (no historical demand available)
-    lag_cols = (
-        [f"demand_lag_{i}"         for i in range(1, N_LAG_DAYS + 1)]
-        + [f"demand_roll_mean_{w}" for w in ROLLING_WIN]
-        + [f"demand_roll_std_{w}"  for w in ROLLING_WIN]
-    )
-    df = df.merge(
-        train_df_sorted[["Index"] + lag_cols],
-        on="Index",
-        how="left",
-    )
-
-    # Merge geo_hour_demand_mean
+    # Merge geo_hour_demand_mean back
     df = df.merge(geo_hour_mean, on=["geohash", "hour"], how="left")
     df["geo_hour_demand_mean"].fillna(global_mean, inplace=True)
-
-    # Fill lag NaNs with the geohash mean (safe fallback for test rows)
-    for col in lag_cols:
-        df[col].fillna(df["geohash_demand_mean"], inplace=True)
 
     # ── STEP 5: Export ────────────────────────
     print("\n[6/6] Step 5 – Exporting enriched datasets …")
@@ -352,8 +306,8 @@ def build_features(
 
     train_out.to_csv(out_dir / "train_features.csv", index=False)
     test_out.to_csv( out_dir / "test_features.csv",  index=False)
-    print(f"  ✅  train_features.csv  →  {train_out.shape}")
-    print(f"  ✅  test_features.csv   →  {test_out.shape}")
+    print(f"  [OK]  train_features.csv  ->  {train_out.shape}")
+    print(f"  [OK]  test_features.csv   ->  {test_out.shape}")
 
     # Save encoder artifacts for Person 2 (reproducibility)
     encoders = {
@@ -366,10 +320,10 @@ def build_features(
     }
     with open(out_dir / "encoders.pkl", "wb") as f:
         pickle.dump(encoders, f)
-    print(f"  ✅  encoders.pkl saved  →  {out_dir / 'encoders.pkl'}")
+    print(f"  [OK]  encoders.pkl saved  ->  {out_dir / 'encoders.pkl'}")
 
     # Print feature summary
-    print("\n── Feature Summary ──────────────────────────────────────")
+    print("\n-- Feature Summary --------------------------------------")
     print(f"  Total features in train : {train_out.shape[1]}")
     print(f"  Total features in test  : {test_out.shape[1]}")
     feature_cols = [c for c in train_out.columns if c not in [TARGET, "Index"]]
